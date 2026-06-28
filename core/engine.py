@@ -199,7 +199,7 @@ def remove_path(target: Path, dry_run: bool, log: Logger = _noop) -> int:
 
 
 def archive_path(target: Path, archive_root: str, dry_run: bool, log: Logger = _noop) -> int:
-    """Move a file/folder into a dated archive folder instead of deleting it.
+    r"""Move a file/folder into a dated archive folder instead of deleting it.
 
     Layout: <archive_root>\<YYYY-MM-DD>\<drive-stripped relative path>
     Returns bytes moved (so the GUI can report space freed from the source drive).
@@ -232,6 +232,49 @@ def archive_path(target: Path, archive_root: str, dry_run: bool, log: Logger = _
     except Exception as e:
         log(f"  ! could not archive {target}: {e}")
         return 0
+
+
+def walk_files_action(
+    root: Path,
+    name_globs: List[str],
+    action: str,
+    archive_root: str,
+    dry_run: bool,
+    exclude_dir_names: List[str] = None,
+    log: Logger = _noop,
+) -> int:
+    """Walk a tree, match files by fnmatch glob(s), and prune or archive each.
+
+    exclude_dir_names: directory names to skip entirely (e.g. ['memory', 'skills'])
+    so precious folders are never descended into. action is 'prune' or 'archive'.
+    """
+    import fnmatch
+    if not root.exists():
+        log(f"  skip (not found): {root}")
+        return 0
+    exclude = {e.lower() for e in (exclude_dir_names or [])}
+    freed = 0
+    for base, dirs, files in os.walk(root):
+        # prune excluded dirs in-place so os.walk does not descend into them
+        dirs[:] = [d for d in dirs if d.lower() not in exclude]
+        for f in files:
+            if any(fnmatch.fnmatch(f, g) for g in name_globs):
+                p = Path(base) / f
+                if action == "archive":
+                    freed += archive_path(p, archive_root, dry_run, log)
+                else:
+                    size = _safe_file_size(p)
+                    if dry_run:
+                        log(f"  would delete: {p}")
+                        freed += size
+                    else:
+                        try:
+                            _make_writable(p)
+                            p.unlink(missing_ok=True)
+                            freed += size
+                        except Exception as e:
+                            log(f"  ! could not delete {p}: {e}")
+    return freed
 
 
 def delete_files_by_pattern(root: Path, regex_list: List[str], dry_run: bool, log: Logger = _noop) -> int:

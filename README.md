@@ -24,6 +24,24 @@ python main.py
 - **Preview only** toggle = dry-run (logs what it would delete, deletes nothing).
 - **Big folders…** runs a recursive size scan of `C:\` to find where space went.
 
+### Find pileups quickly
+
+```powershell
+python scan_devils.py            # AppData/.cache folders >=100MB, auto-tags caches
+python scan_devils.py --min 50   # lower threshold
+python scan_devils.py --full     # also recurse C:\ (slow)
+```
+
+Report-only. `[CACHE]` / `[UPDATER]` tags mark items that are usually safe.
+
+### Archive vs delete
+
+Tasks with `action="archive"` (e.g. **AI chat & session history**) move data to
+`archive_root\<date>\...` (default `D:\_CleanerArchive`) instead of deleting, so
+it is recoverable. Change `archive_root` in `config.json`. The AI-history task
+preserves skills, config, and ALL `memory` folders — it only archives past
+chats/sessions/logs (Claude `.jsonl`, Codex sessions, Copilot chat).
+
 ## Categories
 
 - **Docker** — build cache, stopped containers, dangling / all unused images,

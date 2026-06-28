@@ -8,8 +8,7 @@
 #   - docker -> delegated to core.docker
 
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, List, Optional
 
 from . import engine
 from . import docker
@@ -22,9 +21,12 @@ class CleanTask:
     key: str
     label: str
     description: str
+    group: str = "Other"                # GUI collapsible group
     requires_admin: bool = False
     risky: bool = False                 # show a warning emphasis in GUI
     default_on: bool = True
+    action: str = "prune"               # "prune" = delete, "archive" = move to archive_root then remove
+    archive_root: str = "D:\\_CleanerArchive"
 
     # path-based config
     clear_children: List[str] = field(default_factory=list)   # delete contents, keep folder
@@ -32,6 +34,8 @@ class CleanTask:
     remove_files: List[str] = field(default_factory=list)     # delete specific files
     glob_in_dir: List[tuple] = field(default_factory=list)    # (dir, glob) pairs
     regex_under: List[tuple] = field(default_factory=list)    # (root, [regex]) pairs
+    # (root, [name_globs], [exclude_dir_names]) - recursive file match honouring task.action
+    walk_match: List[tuple] = field(default_factory=list)
 
     # for command-style tasks
     custom_scan: Optional[Callable[[], int]] = None
@@ -69,21 +73,40 @@ class CleanTask:
         if self.custom_run is not None:
             return self.custom_run(log, dry_run)
         freed = 0
+        archiving = self.action == "archive"
         for pat in self.clear_children:
             for p in engine.iter_paths(pat):
-                freed += engine.delete_children(p, dry_run, log)
+                if archiving:
+                    # archive each child, keeping the parent folder
+                    if p.exists() and p.is_dir():
+                        for child in list(p.iterdir()):
+                            freed += engine.archive_path(child, self.archive_root, dry_run, log)
+                else:
+                    freed += engine.delete_children(p, dry_run, log)
         for pat in self.remove_dirs:
             for p in engine.iter_paths(pat):
-                freed += engine.remove_path(p, dry_run, log)
+                if archiving:
+                    freed += engine.archive_path(p, self.archive_root, dry_run, log)
+                else:
+                    freed += engine.remove_path(p, dry_run, log)
         for f in self.remove_files:
             for p in engine.iter_paths(f):
-                freed += engine.remove_path(p, dry_run, log)
+                if archiving:
+                    freed += engine.archive_path(p, self.archive_root, dry_run, log)
+                else:
+                    freed += engine.remove_path(p, dry_run, log)
         for d, pattern in self.glob_in_dir:
             for p in engine.iter_paths(d):
                 freed += engine.delete_glob_in_dir(p, pattern, dry_run, log)
         for root, regexes in self.regex_under:
             for p in engine.iter_paths(root):
                 freed += engine.delete_files_by_pattern(p, regexes, dry_run, log)
+        for root, globs, exclude in self.walk_match:
+            for p in engine.iter_paths(root):
+                freed += engine.walk_files_action(
+                    p, globs, self.action, self.archive_root, dry_run,
+                    exclude_dir_names=exclude, log=log,
+                )
         return freed
 
 
@@ -146,6 +169,53 @@ def _run_delete_shadows(log: Logger, dry_run: bool) -> int:
         return 0
     engine.run_cmd("vssadmin delete shadows /all /quiet", log)
     return 0
+
+
+def _python_install_roots():
+    """Yield Python install roots to scan for site-packages."""
+    import os as _os
+    candidates = [
+        _os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python"),
+        _os.path.expandvars(r"%APPDATA%\Python"),
+        r"C:\Python",
+    ]
+    seen = set()
+    for c in candidates:
+        if _os.path.isdir(c):
+            for entry in _os.scandir(c):
+                if entry.is_dir() and entry.path not in seen:
+                    seen.add(entry.path)
+                    yield entry.path
+            # also the dir itself (in case site-packages is directly under)
+            yield c
+
+
+def _iter_tilde_dirs():
+    """Yield Path objects for every '~*' folder inside any site-packages."""
+    import os as _os
+    from pathlib import Path as _Path
+    for root in _python_install_roots():
+        for base, dirs, _files in _os.walk(root):
+            if base.lower().endswith("site-packages"):
+                for d in list(dirs):
+                    if d.startswith("~"):
+                        yield _Path(base) / d
+                # don't descend deeper than site-packages children for ~ dirs
+        # walk already recurses; fine for our sizes
+
+
+def _scan_python_tilde_junk() -> int:
+    total = 0
+    for d in _iter_tilde_dirs():
+        total += engine.dir_size(d)
+    return total
+
+
+def _run_python_tilde_junk(log: Logger, dry_run: bool) -> int:
+    freed = 0
+    for d in _iter_tilde_dirs():
+        freed += engine.remove_path(d, dry_run, log)
+    return freed
 
 
 # ---------- task registry ----------
@@ -281,10 +351,21 @@ def build_tasks(docker_keys: Optional[List[str]] = None) -> List[CleanTask]:
         ],
     ))
 
-    # ----- VS Code -----
+    # ----- Python ~* corrupted pip leftovers -----
+    # When pip is interrupted mid-uninstall it leaves '~xxx' folders that Python
+    # cannot import. Pure junk, always safe. We hunt them under every Python install.
     tasks.append(CleanTask(
-        key="vscode", label="VS Code caches",
-        description="Clears VS Code Cache/CachedData/GPUCache/logs/workspaceStorage.",
+        key="python_tilde_junk", label="Python corrupted pip leftovers (~*)",
+        description="Finds and removes '~'-prefixed folders in site-packages (failed pip uninstalls). Always safe; they cannot be imported.",
+        default_on=True,
+        custom_run=_run_python_tilde_junk,
+        custom_scan=_scan_python_tilde_junk,
+    ))
+
+    # ----- VS Code (caches) -----
+    tasks.append(CleanTask(
+        key="vscode", label="VS Code caches (~4.5GB)",
+        description="Clears WebStorage, CachedExtensionVSIXs, Crashpad, Partitions, Cache/CachedData/GPUCache/logs. Settings, keybindings, snippets, History are kept.",
         default_on=True,
         clear_children=[
             r"%APPDATA%\Code\Cache",
@@ -292,8 +373,50 @@ def build_tasks(docker_keys: Optional[List[str]] = None) -> List[CleanTask]:
             r"%APPDATA%\Code\Code Cache",
             r"%APPDATA%\Code\GPUCache",
             r"%APPDATA%\Code\logs",
+            r"%APPDATA%\Code\WebStorage",
+            r"%APPDATA%\Code\Crashpad",
+            r"%APPDATA%\Code\Partitions",
             r"%APPDATA%\Code\Service Worker\CacheStorage",
             r"%APPDATA%\Code\CachedExtensionVSIXs",
+        ],
+    ))
+
+    # ----- VS Code workspaceStorage (the big 13.8GB; per-workspace state) -----
+    tasks.append(CleanTask(
+        key="vscode_workspacestorage", label="VS Code workspaceStorage (~13.8GB)",
+        description="Clears per-workspace state (layout, undo history, per-folder extension data). Settings/extensions stay. You lose remembered per-folder undo.",
+        default_on=True,
+        clear_children=[r"%APPDATA%\Code\User\workspaceStorage"],
+    ))
+
+    # ----- vscode-cpptools IntelliSense DB (7.2GB) -----
+    tasks.append(CleanTask(
+        key="vscode_cpptools", label="VS Code C++ IntelliSense cache (~7GB)",
+        description="Clears the C/C++ extension's IntelliSense database. Rebuilds automatically when you open C++ projects.",
+        default_on=True,
+        clear_children=[r"%LOCALAPPDATA%\Microsoft\vscode-cpptools"],
+    ))
+
+    # ----- AI model caches (HuggingFace etc.) -----
+    tasks.append(CleanTask(
+        key="ai_models", label="AI model caches (HuggingFace ~12GB)",
+        description="Clears downloaded HuggingFace models/datasets cache. Re-downloads on demand. You asked: no models on C:.",
+        default_on=True,
+        clear_children=[
+            r"%USERPROFILE%\.cache\huggingface",
+            r"%USERPROFILE%\.cache\torch",
+            r"%LOCALAPPDATA%\huggingface",
+        ],
+    ))
+
+    # ----- Browser automation caches -----
+    tasks.append(CleanTask(
+        key="browser_automation", label="Playwright / Puppeteer caches",
+        description="Clears ms-playwright browser binaries and puppeteer cache. Re-installed when needed.",
+        default_on=True,
+        clear_children=[
+            r"%LOCALAPPDATA%\ms-playwright",
+            r"%USERPROFILE%\.cache\puppeteer",
         ],
     ))
 
@@ -341,12 +464,116 @@ def build_tasks(docker_keys: Optional[List[str]] = None) -> List[CleanTask]:
         ],
     ))
 
+    # ----- AI assistant chat / session history (archive, not delete) -----
+    # Preserves skills, config, AND every 'memory' subfolder. Only past chats/sessions/logs.
+    tasks.append(CleanTask(
+        key="ai_history", label="AI chat & session history (Claude/Codex/Copilot)",
+        description="Archives then removes Codex sessions, Claude session .jsonl transcripts, file-history, and Copilot chat history. Keeps skills, config, and ALL memories.",
+        default_on=True,
+        action="archive",
+        # whole-folder history (safe to move entirely)
+        remove_dirs=[
+            r"%USERPROFILE%\.codex\sessions",
+            r"%USERPROFILE%\.codex\archived_sessions",
+            r"%USERPROFILE%\.codex\.tmp",
+            r"%USERPROFILE%\.claude\file-history",
+            r"%USERPROFILE%\.claude\shell-snapshots",
+            r"%APPDATA%\Code\User\globalStorage\github.copilot-chat",
+            r"%APPDATA%\Code\User\globalStorage\emptyWindowChatSessions",
+        ],
+        # single files
+        remove_files=[
+            r"%USERPROFILE%\.codex\logs_2.sqlite",
+            r"%USERPROFILE%\.codex\logs_2.sqlite-wal",
+            r"%USERPROFILE%\.codex\logs_2.sqlite-shm",
+        ],
+        # Claude transcripts: archive every *.jsonl under projects\ BUT never descend
+        # into 'memory' or 'skills' subfolders.
+        walk_match=[
+            (r"%USERPROFILE%\.claude\projects", ["*.jsonl"], ["memory", "skills"]),
+        ],
+    ))
+
+    # ----- App leftovers & extra caches (green-lit 2026-06-28) -----
+    tasks.append(CleanTask(
+        key="app_leftovers", label="App leftovers & extra caches",
+        description="Steam html cache, pyppeteer, TabNine, Chrome/Zoom caches, and updater leftovers (obsidian, dbd, Package Cache, Revo logs). All safe / regenerate.",
+        default_on=True,
+        clear_children=[
+            r"%LOCALAPPDATA%\Steam\htmlcache",
+            r"%LOCALAPPDATA%\Google\Chrome\User Data\Default\Cache",
+            r"%LOCALAPPDATA%\Google\Chrome\User Data\Default\Code Cache",
+            r"%LOCALAPPDATA%\Google\Chrome\User Data\Default\GPUCache",
+            r"%APPDATA%\Zoom\data\Structured",
+            r"%APPDATA%\Zoom\logs",
+        ],
+        remove_dirs=[
+            r"%LOCALAPPDATA%\pyppeteer",
+            r"%APPDATA%\TabNine",
+            r"%LOCALAPPDATA%\obsidian-updater",
+            r"%LOCALAPPDATA%\dbdicontoolbox-updater",
+            r"%LOCALAPPDATA%\Package Cache",
+            r"%LOCALAPPDATA%\VS Revo Group",
+        ],
+    ))
+
     # ----- Temp -----
     tasks.append(CleanTask(
         key="temp", label="User & Windows temp folders",
         description="Clears %TEMP% and C:\\Windows\\Temp. Some in-use files may be skipped.",
         default_on=True,
         clear_children=[r"%TEMP%", r"%WINDIR%\Temp"],
+    ))
+
+    # ----- Adobe (broader: all app caches, not just media) -----
+    tasks.append(CleanTask(
+        key="adobe_full", label="Adobe app caches & logs (broad)",
+        description="Clears Creative Cloud caches, CameraRaw cache, peer-app caches and Adobe logs across LocalAppData/Roaming/ProgramData.",
+        default_on=True,
+        clear_children=[
+            r"%LOCALAPPDATA%\Adobe\CameraRaw\Cache",
+            r"%LOCALAPPDATA%\Adobe\TypeSupport",
+            r"%LOCALAPPDATA%\Adobe\CoreSync\plugins\livetype\.cache",
+            r"%LOCALAPPDATA%\Adobe\OOBE",
+            r"%APPDATA%\Adobe\Common\Media Cache",
+            r"%APPDATA%\Adobe\Common\Media Cache Files",
+            r"%APPDATA%\Adobe\Lightroom\Caches",
+            r"%PROGRAMDATA%\Adobe\ARMDC\Logs",
+            r"%PROGRAMDATA%\Adobe\Setup",
+        ],
+    ))
+
+    # ----- Browser data (full cache across browsers) -----
+    tasks.append(CleanTask(
+        key="browsers", label="Browser caches (Chrome, Edge, Brave, Firefox)",
+        description="Clears Cache/Code Cache/GPUCache for Chrome, Edge, Brave and Firefox cache2. History/passwords are NOT touched.",
+        default_on=True,
+        clear_children=[
+            r"%LOCALAPPDATA%\Google\Chrome\User Data\Default\Cache",
+            r"%LOCALAPPDATA%\Google\Chrome\User Data\Default\Code Cache",
+            r"%LOCALAPPDATA%\Google\Chrome\User Data\Default\GPUCache",
+            r"%LOCALAPPDATA%\Google\Chrome\User Data\Default\Service Worker\CacheStorage",
+            r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\Default\Cache",
+            r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\Default\Code Cache",
+            r"%LOCALAPPDATA%\BraveSoftware\Brave-Browser\User Data\Default\GPUCache",
+            r"%APPDATA%\Mozilla\Firefox\Profiles\*\cache2",
+            r"%LOCALAPPDATA%\Mozilla\Firefox\Profiles\*\cache2",
+        ],
+    ))
+
+    # ----- Windows extras (admin): logs, prefetch, font cache, error reports -----
+    tasks.append(CleanTask(
+        key="windows_extras", label="Windows logs, prefetch & error reports",
+        description="Clears CBS/DISM logs, Prefetch, WER archives, and old setup logs. Admin recommended.",
+        requires_admin=True, default_on=True,
+        clear_children=[
+            r"%WINDIR%\Prefetch",
+            r"%WINDIR%\Logs\CBS",
+            r"%WINDIR%\Logs\DISM",
+            r"%PROGRAMDATA%\Microsoft\Windows\WER\ReportArchive",
+            r"%PROGRAMDATA%\Microsoft\Windows\WER\Temp",
+            r"%WINDIR%\Panther",
+        ],
     ))
 
     # ----- NLE previews (off by default, regex) -----
@@ -359,5 +586,26 @@ def build_tasks(docker_keys: Optional[List[str]] = None) -> List[CleanTask]:
             r".*Preview.*\.mpeg", r".*\.mpgindex", r".*\.prmdc", r".*\.wavpk",
         ])],
     ))
+
+    # Assign GUI groups by key (keeps task definitions above uncluttered).
+    GROUPS = {
+        "docker": "Docker",
+        "hibernation": "System (admin)", "dism": "System (admin)",
+        "dism_resetbase": "System (admin)", "update_downloads": "System (admin)",
+        "delivery_optimization": "System (admin)", "shadow_resize": "System (admin)",
+        "delete_shadows": "System (admin)", "crash_dumps": "System (admin)",
+        "dev": "Dev & Python", "python_tilde_junk": "Dev & Python",
+        "vscode": "Dev & Python", "vscode_workspacestorage": "Dev & Python",
+        "vscode_cpptools": "Dev & Python", "browser_automation": "Dev & Python",
+        "ai_models": "Caches", "nvidia": "Caches", "media": "Caches",
+        "ms_caches": "Caches", "adobe_dunamis": "Caches", "games": "Caches",
+        "app_leftovers": "Caches", "temp": "Caches", "adobe_full": "Caches",
+        "browsers": "Caches",
+        "windows_extras": "System (admin)",
+        "ai_history": "AI history",
+        "nle_previews": "Media",
+    }
+    for t in tasks:
+        t.group = GROUPS.get(t.key, "Other")
 
     return tasks
