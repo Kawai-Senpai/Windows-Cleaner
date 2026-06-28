@@ -35,10 +35,77 @@ nuking it.
 
 ---
 
-## 🚀 Quick start
+## 📦 Requirements
+
+| Requirement | Notes |
+| :-- | :-- |
+| **Windows** | Windows 10 / 11. The tool refuses to run on other OSes. |
+| **Python 3.10+** | 64-bit CPython recommended. `tkinter` must be included (it is, with the standard python.org installer). |
+| **ttkbootstrap** | The only third-party dependency. Pulls in Pillow automatically. |
+| **Admin (optional)** | Only needed for system tasks (DISM, Update cache, restore points). The app runs fine without it. |
+
+---
+
+## ⚙️ Setup & install
+
+**1. Get the code**
 
 ```powershell
-pip install ttkbootstrap
+git clone https://github.com/<you>/WindowsCleaner.git
+cd WindowsCleaner
+```
+
+**2. (Recommended) create a virtual environment**
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1     # PowerShell
+```
+
+> [!TIP]
+> If activation is blocked by execution policy, run once:
+> `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
+
+**3. Install dependencies**
+
+```powershell
+pip install -r requirements.txt
+```
+
+**4. Verify the install**
+
+```powershell
+python -c "import ttkbootstrap; print('ok')"
+```
+
+**5. Run**
+
+```powershell
+python main.py            # launch the GUI (non-admin)
+python main.py --admin    # relaunch elevated for system tasks (UAC prompt)
+```
+
+> [!NOTE]
+> No build step is required - it is a pure-Python Tkinter app. To uninstall,
+> delete the folder (and `config.json` if you want to drop saved choices).
+
+### Troubleshooting
+
+| Symptom | Fix |
+| :-- | :-- |
+| `ModuleNotFoundError: ttkbootstrap` | Run `pip install -r requirements.txt` inside the active venv. |
+| `ModuleNotFoundError: tkinter` | Reinstall Python from python.org with the **tcl/tk** option ticked. |
+| `This tool is for Windows only.` | Expected - it only runs on Windows. |
+| System tasks greyed out / skipped | Not elevated. Click **Restart as Admin** or use `--admin`. |
+| Activate script blocked | See the execution-policy tip above. |
+
+---
+
+## 🚀 Quick start
+
+Already set up? Just:
+
+```powershell
 python main.py
 ```
 
@@ -137,6 +204,7 @@ GUI write it for you. Delete the file to reset to defaults.
 
 ```
 main.py          Entry point
+requirements.txt Runtime dependencies (ttkbootstrap)
 config.json      Persisted user choices (auto-created)
 core/
   engine.py      Path expansion, sizing, safe deletion, shell commands

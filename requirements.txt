@@ -1,0 +1,8 @@
+# Windows Cleaner runtime dependencies
+# Install with:  pip install -r requirements.txt
+#
+# Only one direct dependency. tkinter ships with the standard CPython
+# installer on Windows, so it is not listed here. Pillow is pulled in
+# automatically by ttkbootstrap.
+
+ttkbootstrap>=1.10.1
