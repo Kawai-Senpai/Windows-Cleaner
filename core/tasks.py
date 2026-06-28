@@ -397,6 +397,39 @@ def build_tasks(docker_keys: Optional[List[str]] = None) -> List[CleanTask]:
         clear_children=[r"%LOCALAPPDATA%\Microsoft\vscode-cpptools"],
     ))
 
+    # ----- Other VS Code-based editors (Kiro, Cursor, Windsurf, VSCodium, Insiders) -----
+    # Same Electron cache layout; clears caches + workspaceStorage, keeps settings.
+    _editor_roots = [
+        r"%APPDATA%\Kiro", r"%APPDATA%\Cursor", r"%APPDATA%\Windsurf",
+        r"%APPDATA%\VSCodium", r"%APPDATA%\Code - Insiders",
+    ]
+    _editor_children = []
+    for _r in _editor_roots:
+        for _sub in ("Cache", "CachedData", "Code Cache", "GPUCache", "logs",
+                     "WebStorage", "Crashpad", "CachedExtensionVSIXs",
+                     r"User\workspaceStorage"):
+            _editor_children.append(_r + "\\" + _sub)
+    tasks.append(CleanTask(
+        key="other_editors", label="Other code editors (Kiro/Cursor/Windsurf/VSCodium)",
+        description="Clears caches & workspaceStorage for other VS Code-based editors if installed. Settings kept.",
+        default_on=True,
+        clear_children=_editor_children,
+    ))
+
+    # ----- Game/engine ASSETS, plugins, downloaded content (OPT-IN, off by default) -----
+    # Removing these means re-downloading large assets. NEVER on by default; archive.
+    tasks.append(CleanTask(
+        key="game_assets", label="Game/engine downloaded assets & plugins (opt-in)",
+        description="Archives Epic VaultCache, Quixel/Megascans/Fab libraries, and UE DerivedDataCache. OFF by default - removing means re-downloading large assets. Excludes games you play.",
+        default_on=False, risky=True, action="archive",
+        remove_dirs=[
+            r"C:\Program Files\Epic Games\Launcher\VaultCache",
+            r"%USERPROFILE%\Documents\Megascans Library\Downloaded",
+            r"%LOCALAPPDATA%\Quixel\Cache",
+            r"%LOCALAPPDATA%\UnrealEngine\Common\DerivedDataCache",
+        ],
+    ))
+
     # ----- AI model caches (HuggingFace etc.) -----
     tasks.append(CleanTask(
         key="ai_models", label="AI model caches (HuggingFace ~12GB)",
@@ -504,8 +537,14 @@ def build_tasks(docker_keys: Optional[List[str]] = None) -> List[CleanTask]:
             r"%LOCALAPPDATA%\Google\Chrome\User Data\Default\Cache",
             r"%LOCALAPPDATA%\Google\Chrome\User Data\Default\Code Cache",
             r"%LOCALAPPDATA%\Google\Chrome\User Data\Default\GPUCache",
+            r"%LOCALAPPDATA%\Google\Chrome\User Data\Default\Service Worker\CacheStorage",
             r"%APPDATA%\Zoom\data\Structured",
             r"%APPDATA%\Zoom\logs",
+            # nested caches inside kept apps (regenerate)
+            r"%APPDATA%\discord\Cache",
+            r"%APPDATA%\discord\Code Cache",
+            r"%APPDATA%\discord\GPUCache",
+            r"%PROGRAMDATA%\Adobe\ARM",
         ],
         remove_dirs=[
             r"%LOCALAPPDATA%\pyppeteer",
@@ -513,7 +552,35 @@ def build_tasks(docker_keys: Optional[List[str]] = None) -> List[CleanTask]:
             r"%LOCALAPPDATA%\obsidian-updater",
             r"%LOCALAPPDATA%\dbdicontoolbox-updater",
             r"%LOCALAPPDATA%\Package Cache",
+            r"%PROGRAMDATA%\Package Cache",
             r"%LOCALAPPDATA%\VS Revo Group",
+        ],
+    ))
+
+    # ----- Game / engine leftover data (archive; removed apps leave config/cache) -----
+    tasks.append(CleanTask(
+        key="game_engine_leftovers", label="Game/engine leftover data",
+        description="Archives leftover UE config/crash data and launcher webcaches from removed games/engines (UnrealEngine, Epic webcache, packaged-game Saved configs).",
+        default_on=False, action="archive",
+        remove_dirs=[
+            r"%LOCALAPPDATA%\UnrealEngine",
+            r"%LOCALAPPDATA%\UnrealEngineLauncher",
+        ],
+        clear_children=[
+            r"%LOCALAPPDATA%\EpicGamesLauncher\Saved\webcache",
+            r"%LOCALAPPDATA%\EpicGamesLauncher\Saved\webcache_*",
+        ],
+    ))
+
+    # ----- Build-tool caches (Gradle JDKs/daemon, etc.) -----
+    tasks.append(CleanTask(
+        key="build_caches", label="Build-tool caches (Gradle JDKs/daemon)",
+        description="Clears Gradle-downloaded JDK toolchains and daemon/native caches. Re-downloaded on next build. Big if you've done Android/UE builds.",
+        default_on=True,
+        remove_dirs=[
+            r"%USERPROFILE%\.gradle\jdks",
+            r"%USERPROFILE%\.gradle\daemon",
+            r"%USERPROFILE%\.gradle\native",
         ],
     ))
 
@@ -597,10 +664,12 @@ def build_tasks(docker_keys: Optional[List[str]] = None) -> List[CleanTask]:
         "dev": "Dev & Python", "python_tilde_junk": "Dev & Python",
         "vscode": "Dev & Python", "vscode_workspacestorage": "Dev & Python",
         "vscode_cpptools": "Dev & Python", "browser_automation": "Dev & Python",
+        "other_editors": "Dev & Python", "game_assets": "Media",
         "ai_models": "Caches", "nvidia": "Caches", "media": "Caches",
         "ms_caches": "Caches", "adobe_dunamis": "Caches", "games": "Caches",
         "app_leftovers": "Caches", "temp": "Caches", "adobe_full": "Caches",
-        "browsers": "Caches",
+        "browsers": "Caches", "game_engine_leftovers": "Caches",
+        "build_caches": "Dev & Python",
         "windows_extras": "System (admin)",
         "ai_history": "AI history",
         "nle_previews": "Media",

@@ -83,7 +83,7 @@ class CleanerApp(tb.Window):
         if not self.is_admin:
             warn = tb.Frame(self, padding=(16, 0))
             warn.pack(fill=X)
-            tb.Label(warn, text="⚠  Not admin — System (admin) tasks will be skipped. Use 'Restart as Admin'.",
+            tb.Label(warn, text="⚠  Not admin - System (admin) tasks will be skipped. Use 'Restart as Admin'.",
                      bootstyle=WARNING, wraplength=940, justify=LEFT).pack(fill=X, pady=(0, 6))
 
         body = tb.Frame(self, padding=(16, 8))
@@ -143,7 +143,7 @@ class CleanerApp(tb.Window):
         cb = tb.Checkbutton(row, text=task.label, variable=var,
                             bootstyle=f"{style}-round-toggle")
         cb.pack(side=LEFT, anchor=W)
-        size_lbl = tb.Label(row, text="—", width=10, anchor=E, bootstyle=SECONDARY)
+        size_lbl = tb.Label(row, text="-", width=10, anchor=E, bootstyle=SECONDARY)
         size_lbl.pack(side=RIGHT)
         tb.Label(parent, text=task.description, font=("Segoe UI", 8),
                  bootstyle=SECONDARY, wraplength=480, justify=LEFT).pack(
@@ -242,7 +242,7 @@ class CleanerApp(tb.Window):
         only = self.only_leftovers.get()
         rows = [d for d in self._program_data if (d.matched_app == "" or not only)]
         if not rows:
-            tb.Label(self.prog_sf, text="(nothing to show — try Scan apps)",
+            tb.Label(self.prog_sf, text="(nothing to show - try Scan apps)",
                      bootstyle=SECONDARY).pack(anchor=W, pady=8)
             return
         for d in rows:
@@ -287,7 +287,7 @@ class CleanerApp(tb.Window):
                 grand += programs.remove_data_folder(d, root, dry_run=False, log=self.log)
             except Exception as e:
                 self.log(f"   ! {e}")
-        self.log(f"══ Done — moved ≈ {engine.human_size(grand)} ══")
+        self.log(f"== Done - moved ~ {engine.human_size(grand)} ==")
         self.after(0, self._update_free_label)
         self.after(0, self._on_scan_programs)
         self.after(0, lambda: self._set_busy(False))
@@ -298,12 +298,12 @@ class CleanerApp(tb.Window):
         self.save_widgets: Dict[str, dict] = {}
         top = tb.Frame(parent, padding=(2, 4))
         top.pack(fill=X)
-        tb.Label(top, text="Game saves & config. Review carefully — these are your saves.",
-                 font=("Segoe UI", 8), bootstyle=WARNING, wraplength=440,
-                 justify=LEFT).pack(side=LEFT)
         self.saves_scan_btn = tb.Button(top, text="Find saves", bootstyle=(INFO, OUTLINE),
                                         command=self._on_scan_saves, width=11)
-        self.saves_scan_btn.pack(side=RIGHT)
+        self.saves_scan_btn.pack(side=RIGHT, padx=(6, 0))
+        tb.Label(top, text="Game saves & config. Review carefully - these are your saves.",
+                 font=("Segoe UI", 8), bootstyle=WARNING, wraplength=320,
+                 justify=LEFT).pack(side=LEFT)
         self.saves_sf = ScrolledFrame(parent, autohide=True)
         self.saves_sf.pack(fill=BOTH, expand=YES)
         tb.Label(self.saves_sf, text="Click 'Find saves' to list game save locations.",
@@ -366,7 +366,7 @@ class CleanerApp(tb.Window):
         root = self.cfg.get("archive_root", r"D:\_CleanerArchive")
         msg = (f"Archive {len(picked)} save folder(s) (~{engine.human_size(total)}) to {root} "
                f"then remove from C:?\n\n" + "\n".join(f"  • {s.name}" for s in picked))
-        if not messagebox.askyesno("Confirm — your game saves", msg):
+        if not messagebox.askyesno("Confirm - your game saves", msg):
             return
         self._set_busy(True)
         threading.Thread(target=self._remove_saves_worker, args=(picked, root), daemon=True).start()
@@ -381,7 +381,7 @@ class CleanerApp(tb.Window):
                 grand += savedgames.archive_save(s, root, dry_run=False, log=self.log)
             except Exception as e:
                 self.log(f"   ! {e}")
-        self.log(f"══ Done — archived ≈ {engine.human_size(grand)} ══")
+        self.log(f"== Done - archived ~ {engine.human_size(grand)} ==")
         self.after(0, self._update_free_label)
         self.after(0, self._on_scan_saves)
         self.after(0, lambda: self._set_busy(False))
@@ -478,7 +478,7 @@ class CleanerApp(tb.Window):
                 size = 0
             grand += size
             group_totals[task.group] = group_totals.get(task.group, 0) + size
-            text = engine.human_size(size) if size else ("?" if task.regex_under else "—")
+            text = engine.human_size(size) if size else ("?" if task.regex_under else "-")
             self.after(0, lambda lbl=w["size"], t=text: lbl.configure(text=t))
         for g, sect in self.group_sections.items():
             tot = group_totals.get(g, 0)
@@ -504,7 +504,7 @@ class CleanerApp(tb.Window):
         protected_py = [v.name for v in pyvers if v.protected]
         vol = "volumes" in self._selected_docker_keys() and any(t.key == "docker" for t in selected)
 
-        msg = "Preview only — nothing will be deleted.\n\n" if dry else ""
+        msg = "Preview only - nothing will be deleted.\n\n" if dry else ""
         msg += f"Process {len(selected)} categories"
         if pyvers:
             msg += f" + remove {len(pyvers)} Python version(s)"
@@ -535,7 +535,7 @@ class CleanerApp(tb.Window):
         grand = 0
         for task in selected:
             if task.requires_admin and not self.is_admin:
-                self.log(f"⊘ {task.label}: needs admin — skipped")
+                self.log(f"⊘ {task.label}: needs admin - skipped")
                 continue
             self.log(f"▶ {task.label}")
             try:
@@ -553,7 +553,7 @@ class CleanerApp(tb.Window):
             except Exception as e:
                 self.log(f"   ! error: {e}")
         verb = "would free" if dry else "freed"
-        self.log(f"══ Done — {verb} ≈ {engine.human_size(grand)} ══")
+        self.log(f"== Done - {verb} ~ {engine.human_size(grand)} ==")
         self.after(0, self._update_free_label)
         self.after(0, lambda: self._set_busy(False))
 
