@@ -51,7 +51,7 @@ nuking it.
 **1. Get the code**
 
 ```powershell
-git clone https://github.com/<you>/WindowsCleaner.git
+git clone https://github.com/Kawai-Senpai/Windows-Cleaner.git
 cd WindowsCleaner
 ```
 
