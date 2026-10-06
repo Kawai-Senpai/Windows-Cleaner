@@ -311,8 +311,10 @@ unless explicitly requested. Sizes are typical observed values, not guarantees.
 | **`delete_shadows`** | Delete ALL restore points (admin) | off |
 | `crash_dumps` | Crash dumps & error reports | on |
 | `media` | Adobe & DaVinci media caches | on |
-| `nvidia` | NVIDIA shader & NGX caches | on |
-| `dev` | npm / pip / gradle / maven package caches | on |
+| `nvidia` | GPU shader caches (NVIDIA/Intel), NGX, NVIDIA app update downloads | on |
+| `dev` | npm / pip / gradle / maven package caches, Trivy DB | on |
+| `uv_cache` | uv package cache via `uv cache clean` (lock-aware) | on |
+| `dev_tool_caches` | puccinialin, TypeScript typings, tree-sitter, node-gyp, Poetry, Conan caches | on |
 | `python_tilde_junk` | Corrupted pip leftovers (`~*` dirs) | on |
 | `vscode` | VS Code caches (~4.5 GB) | on |
 | `vscode_workspacestorage` | VS Code workspaceStorage (~13.8 GB) | on |
@@ -320,17 +322,22 @@ unless explicitly requested. Sizes are typical observed values, not guarantees.
 | `other_editors` | Kiro / Cursor / Windsurf / VSCodium caches | on |
 | `game_assets` | Epic/Quixel/Fab libraries, UE DDC (archive) | off |
 | `ai_models` | HuggingFace model caches (~12 GB) | on |
+| `claude_cowork_vm` | Claude desktop Cowork VM image `vm_bundles` (~10 GB) | on |
 | `browser_automation` | Playwright / Puppeteer caches | on |
 | `games` | Steam downloading & shader cache | on |
 | `ms_caches` | Edge / Teams / OneDrive / Office caches | on |
 | `adobe_dunamis` | Adobe Dunamis logs | on |
 | `ai_history` | AI chat/session history, Claude/Codex/Copilot (archive) | on |
 | `app_leftovers` | App leftovers & extra caches | on |
+| `squirrel_old_versions` | Old `app-x.y.z` folders left by Squirrel auto-updaters | on |
+| `user_crash_logs` | Per-user crash dumps, Crashpad reports, After Effects logs | on |
 | `game_engine_leftovers` | Game/engine leftover data | off |
 | `build_caches` | Gradle JDKs/daemon build caches | on |
 | `temp` | User & Windows temp folders | on |
 | `adobe_full` | Adobe app caches & logs (broad) | on |
+| `adobe_cache_hunt` | After Effects disk cache, Premiere previews, Media Cache / Peak Files on any fixed drive (finds relocated cache folders) | on |
 | `browsers` | Chrome / Edge / Brave / Firefox caches | on |
+| `chromium_caches` | Every other Electron/Chromium app cache under AppData | on |
 | `windows_extras` | Windows logs, prefetch, error reports | on |
 | **`nle_previews`** | NLE preview files (`.cfa`, `.pek`, regex) | off |
 

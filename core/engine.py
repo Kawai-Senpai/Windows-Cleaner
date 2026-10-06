@@ -12,7 +12,7 @@ import ctypes
 import subprocess
 from datetime import datetime
 from pathlib import Path
-from typing import Callable, Iterable, List
+from typing import Callable, Iterable, List, Optional
 
 # A logger is a function that takes a single string line.
 Logger = Callable[[str], None]
@@ -43,6 +43,14 @@ def relaunch_as_admin() -> bool:
         return True
     except Exception:
         return False
+
+
+def fixed_drives() -> List[str]:
+    """Root paths of local fixed disks. Skips removable, network and optical drives."""
+    k32 = ctypes.windll.kernel32
+    mask = k32.GetLogicalDrives()
+    roots = [f"{chr(65 + i)}:\\" for i in range(26) if mask & (1 << i)]
+    return [r for r in roots if k32.GetDriveTypeW(r) == 3]  # DRIVE_FIXED
 
 
 # ---------- path expansion ----------
@@ -148,6 +156,16 @@ def _on_rm_error(func, path, exc_info) -> None:
         pass
 
 
+def _report_leftover(dir_path: Path, log: Logger) -> int:
+    """After rmtree (whose per-file errors _on_rm_error swallows), return the bytes
+    still on disk and log it, so locked/denied files are not reported as freed."""
+    if not dir_path.exists():
+        return 0
+    left = dir_size(dir_path)
+    log(f"  ! partially removed {dir_path}: {human_size(left)} left (files locked or access denied)")
+    return left
+
+
 def delete_children(dir_path: Path, dry_run: bool, log: Logger = _noop) -> int:
     """Delete the contents of a directory but keep the directory itself.
     Returns bytes freed (estimated as size before deletion of removed items)."""
@@ -168,10 +186,11 @@ def delete_children(dir_path: Path, dry_run: bool, log: Logger = _noop) -> int:
         try:
             if item.is_dir():
                 shutil.rmtree(item, onerror=_on_rm_error)
+                freed += size - _report_leftover(item, log)
             else:
                 _make_writable(item)
                 item.unlink(missing_ok=True)
-            freed += size
+                freed += size
         except Exception as e:
             log(f"  ! could not remove {item}: {e}")
     return freed
@@ -189,9 +208,9 @@ def remove_path(target: Path, dry_run: bool, log: Logger = _noop) -> int:
     try:
         if target.is_dir():
             shutil.rmtree(target, onerror=_on_rm_error)
-        else:
-            _make_writable(target)
-            target.unlink(missing_ok=True)
+            return size - _report_leftover(target, log)
+        _make_writable(target)
+        target.unlink(missing_ok=True)
         return size
     except Exception as e:
         log(f"  ! could not remove {target}: {e}")
@@ -331,12 +350,12 @@ def _safe_file_size(p: Path) -> int:
 
 # ---------- shell commands ----------
 
-def run_cmd(cmd: str, log: Logger = _noop) -> bool:
+def run_cmd(cmd: str, log: Logger = _noop, timeout: Optional[int] = None) -> bool:
     """Run a shell command, streaming output to the logger. Returns True on success."""
     log(f"  $ {cmd}")
     try:
         res = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True,
+            cmd, shell=True, capture_output=True, text=True, timeout=timeout,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         out = (res.stdout or "").strip()

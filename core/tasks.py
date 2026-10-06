@@ -218,6 +218,183 @@ def _run_python_tilde_junk(log: Logger, dry_run: bool) -> int:
     return freed
 
 
+def _uv_cache_dir():
+    """uv's cache folder: UV_CACHE_DIR if set, else the Windows default."""
+    import os as _os
+    from pathlib import Path as _Path
+    return _Path(_os.environ.get("UV_CACHE_DIR") or engine.expand(r"%LOCALAPPDATA%\uv\cache"))
+
+
+def _scan_uv_cache() -> int:
+    return engine.children_size(_uv_cache_dir())
+
+
+def _run_uv_cache(log: Logger, dry_run: bool) -> int:
+    # Prefer 'uv cache clean': it takes uv's cache lock, so it never yanks files
+    # out from under a uv/uvx process that is installing. Without --force it
+    # waits for that lock, hence the timeout. Fallback when uv is not on PATH.
+    import shutil as _shutil
+    cache = _uv_cache_dir()
+    if not _shutil.which("uv"):
+        return engine.delete_children(cache, dry_run, log)
+    before = _scan_uv_cache()
+    if dry_run:
+        log(f"  would run: uv cache clean  ({cache})")
+        return before
+    if not engine.run_cmd("uv cache clean", log, timeout=180):
+        log("  ! uv cache is busy or clean failed; close running uv/uvx processes and retry.")
+    return max(0, before - _scan_uv_cache())
+
+
+# Chromium/Electron cache folder names. Only treated as cache when the parent is
+# a real Chromium profile or user-data dir (has 'Preferences' or 'Local State'),
+# so an unrelated app folder that happens to be called 'Cache' is never touched.
+_CHROMIUM_CACHE_NAMES = {
+    "Cache", "Code Cache", "GPUCache", "DawnCache", "DawnGraphiteCache",
+    "DawnWebGPUCache", "GraphiteDawnCache", "GrShaderCache", "ShaderCache",
+}
+# Never descend: huge non-browser trees, and VS Code-family editors, which are
+# handled by the vscode/other_editors tasks (those need the editor closed).
+_CHROMIUM_SKIP_DIRS = {
+    "temp", "uv", "infinitecode", "npm-cache", "node_modules", "ms-playwright",
+    "python", "pip", "code", "code - insiders", "cursor", "windsurf", "kiro", "vscodium",
+}
+
+
+def _iter_chromium_caches():
+    """Yield every Chromium/Electron cache dir under %LOCALAPPDATA% and %APPDATA%."""
+    import os as _os
+    from pathlib import Path as _Path
+    for root in (engine.expand(r"%LOCALAPPDATA%"), engine.expand(r"%APPDATA%")):
+        for base, dirs, files in _os.walk(root):
+            if base != root and _os.path.basename(base).lower() in _CHROMIUM_SKIP_DIRS:
+                dirs[:] = []
+                continue
+            is_profile = "Preferences" in files or "Local State" in files
+            keep = []
+            for d in dirs:
+                full = _os.path.join(base, d)
+                if engine._is_reparse(full):
+                    continue
+                if is_profile and d in _CHROMIUM_CACHE_NAMES:
+                    yield _Path(full)
+                else:
+                    keep.append(d)
+            dirs[:] = keep
+
+
+def _scan_chromium_caches() -> int:
+    return sum(engine.children_size(p) for p in _iter_chromium_caches())
+
+
+def _run_chromium_caches(log: Logger, dry_run: bool) -> int:
+    return sum(engine.delete_children(p, dry_run, log) for p in list(_iter_chromium_caches()))
+
+
+def _iter_squirrel_old_versions():
+    """Yield superseded 'app-x.y.z' folders of Squirrel-updated apps (Figma, Discord,
+    Compass...). Squirrel keeps old versions after self-updating; only the newest runs."""
+    import os as _os
+    import re as _re
+    from pathlib import Path as _Path
+    root = engine.expand(r"%LOCALAPPDATA%")
+    for app in _os.scandir(root):
+        if not app.is_dir() or not _os.path.isfile(_os.path.join(app.path, "Update.exe")):
+            continue
+        versions = []
+        for d in _os.scandir(app.path):
+            m = _re.fullmatch(r"app-(\d+(?:\.\d+)*)", d.name)
+            if m and d.is_dir():
+                versions.append((tuple(int(x) for x in m.group(1).split(".")), d.path))
+        versions.sort()
+        for _v, path in versions[:-1]:
+            yield _Path(path)
+
+
+def _scan_squirrel_old_versions() -> int:
+    return sum(engine.dir_size(p) for p in _iter_squirrel_old_versions())
+
+
+def _run_squirrel_old_versions(log: Logger, dry_run: bool) -> int:
+    return sum(engine.remove_path(p, dry_run, log) for p in list(_iter_squirrel_old_versions()))
+
+
+# Adobe cache folders can sit on any drive: After Effects and Premiere let you
+# relocate the disk/media cache in Preferences, and Premiere writes preview
+# folders next to the project file. So they are hunted by folder name across
+# every fixed drive rather than listed as fixed paths.
+# Deliberately NOT matched: 'Adobe ... Auto-Save' folders (project backups).
+_ADOBE_PREVIEW_DIRS = {"adobe premiere pro audio previews", "adobe premiere pro video previews"}
+# Generic names, so only treated as Adobe cache with a second signal: see _iter_adobe_caches.
+_ADOBE_MEDIA_CACHE_DIRS = {"media cache", "media cache files"}
+_ADOBE_GUARDED_DIRS = _ADOBE_MEDIA_CACHE_DIRS | {"peak files"}
+_ADOBE_CACHE_EXTS = {".cfa", ".pek", ".pkf", ".ims", ".mcdb", ".prmdc", ".prmdc2", ".mpgindex"}
+# Never descend: system trees, VCS/dependency trees, the cleaner's own archive, and
+# AppData/ProgramData (huge; only their Adobe folders are walked, see _iter_adobe_caches).
+_ADOBE_HUNT_SKIP_DIRS = {
+    "windows", "program files", "program files (x86)", "$recycle.bin",
+    "system volume information", "node_modules", ".git", "_cleanerarchive",
+    "appdata", "programdata",
+}
+
+
+def _only_adobe_cache_files(path: str) -> bool:
+    """True when the folder holds at least one file and every file is an Adobe cache file."""
+    import os as _os
+    found = False
+    for _base, _dirs, files in _os.walk(path):
+        for f in files:
+            if _os.path.splitext(f)[1].lower() not in _ADOBE_CACHE_EXTS:
+                return False
+            found = True
+    return found
+
+
+def _iter_adobe_caches():
+    r"""Yield Adobe cache/preview dirs on every fixed drive:
+    - '...\After Effects\<version>\Disk Cache*' (AE disk cache, default or relocated)
+    - 'Adobe Premiere Pro Audio/Video Previews' (next to project files)
+    - 'Media Cache', 'Media Cache Files', 'Peak Files', but only when the two Media
+      Cache folders sit side by side (the layout Adobe creates in a cache location)
+      or the folder contains nothing but Adobe cache files."""
+    import os as _os
+    from pathlib import Path as _Path
+    stack = engine.fixed_drives() + [
+        engine.expand(r"%LOCALAPPDATA%\Adobe"), engine.expand(r"%APPDATA%\Adobe"),
+    ]
+    while stack:
+        base = stack.pop()
+        try:
+            with _os.scandir(base) as it:
+                subdirs = [e for e in it if e.is_dir(follow_symlinks=False)]
+        except OSError:
+            continue
+        names = {e.name.lower() for e in subdirs}
+        cache_location = _ADOBE_MEDIA_CACHE_DIRS <= names
+        in_ae_version = _os.path.basename(_os.path.dirname(base)).lower() == "after effects"
+        for e in subdirs:
+            low = e.name.lower()
+            if low in _ADOBE_HUNT_SKIP_DIRS or engine._is_reparse(e.path):
+                continue
+            if low in _ADOBE_PREVIEW_DIRS or (in_ae_version and low.startswith("disk cache")):
+                yield _Path(e.path)
+            elif low in _ADOBE_GUARDED_DIRS:
+                # a cache folder is never descended into, matched or not
+                if cache_location or _only_adobe_cache_files(e.path):
+                    yield _Path(e.path)
+            else:
+                stack.append(e.path)
+
+
+def _scan_adobe_caches() -> int:
+    return sum(engine.children_size(p) for p in _iter_adobe_caches())
+
+
+def _run_adobe_caches(log: Logger, dry_run: bool) -> int:
+    # contents only: the folder is the cache location configured in the app
+    return sum(engine.delete_children(p, dry_run, log) for p in list(_iter_adobe_caches()))
+
+
 # ---------- task registry ----------
 
 def build_tasks(docker_keys: Optional[List[str]] = None) -> List[CleanTask]:
@@ -319,21 +496,24 @@ def build_tasks(docker_keys: Optional[List[str]] = None) -> List[CleanTask]:
 
     # ----- NVIDIA -----
     tasks.append(CleanTask(
-        key="nvidia", label="NVIDIA shader & NGX caches",
-        description="Clears NV_Cache, DXCache, GLCache and removes NGX model cache.",
+        key="nvidia", label="GPU shader caches & NVIDIA update downloads",
+        description="Clears NVIDIA NV_Cache/DXCache/GLCache/ComputeCache, Intel shader cache, NGX model cache, and already-installed NVIDIA app update packages (ota-artifacts).",
         default_on=True,
         remove_dirs=[r"C:\ProgramData\NVIDIA\NGX\models"],
         clear_children=[
             r"C:\ProgramData\NVIDIA Corporation\NV_Cache",
             r"%LOCALAPPDATA%\NVIDIA\DXCache",
             r"%LOCALAPPDATA%\NVIDIA\GLCache",
+            r"%APPDATA%\NVIDIA\ComputeCache",
+            r"%USERPROFILE%\AppData\LocalLow\Intel\ShaderCache",
+            r"C:\ProgramData\NVIDIA Corporation\NVIDIA app\UpdateFramework\ota-artifacts",
         ],
     ))
 
     # ----- Dev caches -----
     tasks.append(CleanTask(
         key="dev", label="Dev package caches (npm, pip, gradle, maven...)",
-        description="Clears npm/yarn/pnpm/pip/Poetry/NuGet/Gradle/Maven caches. They re-download on demand.",
+        description="Clears npm/yarn/pnpm/pip/Poetry/NuGet/Gradle/Maven caches and the Trivy vulnerability DB. They re-download on demand.",
         default_on=True,
         clear_children=[
             r"%APPDATA%\npm-cache",
@@ -348,6 +528,33 @@ def build_tasks(docker_keys: Optional[List[str]] = None) -> List[CleanTask]:
             r"%USERPROFILE%\.gradle\caches",
             r"%USERPROFILE%\.gradle\wrapper\dists",
             r"%USERPROFILE%\.m2\repository",
+            r"%USERPROFILE%\.cache\trivy",
+        ],
+    ))
+
+    # ----- uv cache (green-lit 2026-10-06) -----
+    # Separate from 'dev' because it must go through 'uv cache clean' (lock-aware).
+    # Projects keep working: their .venv files are copies/hardlinks, not cache refs.
+    tasks.append(CleanTask(
+        key="uv_cache", label="uv package cache",
+        description="Runs 'uv cache clean' (wheels, sdists, cached uvx environments). Re-downloads on demand. Waits up to 3 min if another uv process holds the cache.",
+        default_on=True,
+        custom_run=_run_uv_cache,
+        custom_scan=_scan_uv_cache,
+    ))
+
+    # ----- Dev tool side caches (green-lit 2026-10-06) -----
+    tasks.append(CleanTask(
+        key="dev_tool_caches", label="Dev tool side caches (TS, tree-sitter, Rust-for-pip...)",
+        description="Clears puccinialin (Rust toolchains for pip builds), VS Code TypeScript typings cache, tree-sitter grammar pack, node-gyp headers, Poetry and Conan package caches. All re-download on demand.",
+        default_on=True,
+        clear_children=[
+            r"%LOCALAPPDATA%\puccinialin",
+            r"%LOCALAPPDATA%\Microsoft\TypeScript",
+            r"%LOCALAPPDATA%\tree-sitter-language-pack",
+            r"%LOCALAPPDATA%\node-gyp\Cache",
+            r"%LOCALAPPDATA%\pypoetry\Cache",
+            r"%USERPROFILE%\.conan2\p",
         ],
     ))
 
@@ -439,6 +646,17 @@ def build_tasks(docker_keys: Optional[List[str]] = None) -> List[CleanTask]:
             r"%USERPROFILE%\.cache\huggingface",
             r"%USERPROFILE%\.cache\torch",
             r"%LOCALAPPDATA%\huggingface",
+        ],
+    ))
+
+    # ----- Claude desktop Cowork VM image (green-lit 2026-10-06; user does not use Cowork) -----
+    tasks.append(CleanTask(
+        key="claude_cowork_vm", label="Claude desktop Cowork VM image (~10GB)",
+        description="Removes Claude desktop's vm_bundles (the Cowork sandbox VM). Re-downloaded only if you use Cowork again. Chats and settings untouched.",
+        default_on=True,
+        remove_dirs=[
+            r"%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\vm_bundles",
+            r"%APPDATA%\Claude\vm_bundles",
         ],
     ))
 
@@ -554,6 +772,32 @@ def build_tasks(docker_keys: Optional[List[str]] = None) -> List[CleanTask]:
             r"%LOCALAPPDATA%\Package Cache",
             r"%PROGRAMDATA%\Package Cache",
             r"%LOCALAPPDATA%\VS Revo Group",
+            r"%APPDATA%\Zoom\tmp_bin",
+            r"%APPDATA%\Zoom\ZoomDownload",
+        ],
+    ))
+
+    # ----- Old self-updater app versions (green-lit 2026-10-06) -----
+    tasks.append(CleanTask(
+        key="squirrel_old_versions", label="Old app versions left by auto-updaters",
+        description="Removes superseded app-x.y.z folders of Squirrel-updated apps (Figma, Discord, MongoDB Compass...). The newest version is always kept.",
+        default_on=True,
+        custom_run=_run_squirrel_old_versions,
+        custom_scan=_scan_squirrel_old_versions,
+    ))
+
+    # ----- Crash reports & app logs (green-lit 2026-10-06) -----
+    tasks.append(CleanTask(
+        key="user_crash_logs", label="App crash dumps & logs (user)",
+        description="Clears per-user crash dumps, Electron Crashpad reports, Store-app crash dumps and After Effects logs. Admin-level dumps are in crash_dumps.",
+        default_on=True,
+        clear_children=[
+            r"%LOCALAPPDATA%\CrashDumps",
+            r"%APPDATA%\*\Crashpad\reports",
+            r"%LOCALAPPDATA%\*\Crashpad\reports",
+            r"%APPDATA%\Figma\DesktopProfile\*\Crashpad\reports",
+            r"%LOCALAPPDATA%\Packages\*\AC\CrashDumps",
+            r"%APPDATA%\Adobe\After Effects\*\logs",
         ],
     ))
 
@@ -606,8 +850,18 @@ def build_tasks(docker_keys: Optional[List[str]] = None) -> List[CleanTask]:
             r"%APPDATA%\Adobe\Common\Media Cache Files",
             r"%APPDATA%\Adobe\Lightroom\Caches",
             r"%PROGRAMDATA%\Adobe\ARMDC\Logs",
-            r"%PROGRAMDATA%\Adobe\Setup",
+            # not %PROGRAMDATA%\Adobe\Setup: it is Acrobat Reader's MSI install
+            # source, needed to repair/update/uninstall Reader while it is installed.
         ],
+    ))
+
+    # ----- Adobe caches wherever they live (green-lit 2026-10-06) -----
+    tasks.append(CleanTask(
+        key="adobe_cache_hunt", label="Adobe caches on any drive (AE disk cache, previews)",
+        description="Hunts every fixed drive for the After Effects disk cache, Premiere preview folders and Media Cache / Peak Files folders, including relocated cache locations. Rebuilt on demand; Auto-Save folders are never touched. Close Adobe apps first.",
+        default_on=True,
+        custom_run=_run_adobe_caches,
+        custom_scan=_scan_adobe_caches,
     ))
 
     # ----- Browser data (full cache across browsers) -----
@@ -626,6 +880,15 @@ def build_tasks(docker_keys: Optional[List[str]] = None) -> List[CleanTask]:
             r"%APPDATA%\Mozilla\Firefox\Profiles\*\cache2",
             r"%LOCALAPPDATA%\Mozilla\Firefox\Profiles\*\cache2",
         ],
+    ))
+
+    # ----- Every other Chromium/Electron app cache (green-lit 2026-10-06) -----
+    tasks.append(CleanTask(
+        key="chromium_caches", label="All Electron/Chromium app caches",
+        description="Finds Cache/Code Cache/GPUCache/Dawn/shader caches in every Chromium-based app profile under AppData (Figma, Claude, Zoom, Edge Dev, WebView2 apps...). VS Code-family editors are skipped; use their own tasks.",
+        default_on=True,
+        custom_run=_run_chromium_caches,
+        custom_scan=_scan_chromium_caches,
     ))
 
     # ----- Windows extras (admin): logs, prefetch, font cache, error reports -----
@@ -669,7 +932,10 @@ def build_tasks(docker_keys: Optional[List[str]] = None) -> List[CleanTask]:
         "ms_caches": "Caches", "adobe_dunamis": "Caches", "games": "Caches",
         "app_leftovers": "Caches", "temp": "Caches", "adobe_full": "Caches",
         "browsers": "Caches", "game_engine_leftovers": "Caches",
-        "build_caches": "Dev & Python",
+        "build_caches": "Dev & Python", "uv_cache": "Dev & Python",
+        "claude_cowork_vm": "Caches", "dev_tool_caches": "Dev & Python",
+        "squirrel_old_versions": "Caches", "user_crash_logs": "Caches",
+        "chromium_caches": "Caches", "adobe_cache_hunt": "Caches",
         "windows_extras": "System (admin)",
         "ai_history": "AI history",
         "nle_previews": "Media",
